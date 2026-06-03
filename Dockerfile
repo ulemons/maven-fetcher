@@ -15,5 +15,23 @@ ENV MAVEN_FETCHER_DB_URL=""
 ENV MAVEN_FETCHER_DB_USER="maven"
 ENV MAVEN_FETCHER_DB_PASSWORD="maven"
 ENV PORT=8080
+# MODE: "serve" (default) or "run" (nightly fetch)
+ENV MODE="serve"
+# used only in run mode
+ENV FETCH_COUNT="all"
 
-CMD ["sh", "-c", "java -jar app.jar --serve --db-url \"$MAVEN_FETCHER_DB_URL\" --db-user \"$MAVEN_FETCHER_DB_USER\" --db-password \"$MAVEN_FETCHER_DB_PASSWORD\" --port \"$PORT\""]
+CMD ["sh", "-c", "\
+  if [ \"$MODE\" = 'run' ]; then \
+    java -jar app.jar \
+      -n \"$FETCH_COUNT\" \
+      --db-url \"$MAVEN_FETCHER_DB_URL\" \
+      --db-user \"$MAVEN_FETCHER_DB_USER\" \
+      --db-password \"$MAVEN_FETCHER_DB_PASSWORD\"; \
+  else \
+    java -jar app.jar \
+      --serve \
+      --db-url \"$MAVEN_FETCHER_DB_URL\" \
+      --db-user \"$MAVEN_FETCHER_DB_USER\" \
+      --db-password \"$MAVEN_FETCHER_DB_PASSWORD\" \
+      --port \"$PORT\"; \
+  fi"]

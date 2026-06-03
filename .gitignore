@@ -4,3 +4,4 @@ logs/
 *.sql
 !create_maven_packages.sql
 ~/.maven-fetcher/
+.env*

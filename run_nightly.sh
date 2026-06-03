@@ -1,16 +1,29 @@
 #!/usr/bin/env zsh
 # maven-fetcher manual runner
 #
-# Usage: ./run_nightly.sh
+# Usage: ./run_nightly.sh [--env local|prod]
 #
 # Writes a dated log to logs/run-YYYY-MM-DD.log and a change report to
 # logs/change-report-YYYY-MM-DD.txt. Logs older than 30 days are pruned.
 
-# ── DB connection ──────────────────────────────────────────────────────────────
-# Override with environment variables or edit directly here.
-DB_URL="${MAVEN_FETCHER_DB_URL:-jdbc:postgresql://localhost:5435/maven}"
-DB_USER="${MAVEN_FETCHER_DB_USER:-maven}"
-DB_PASSWORD="${MAVEN_FETCHER_DB_PASSWORD:-maven}"
+# ── Environment selection ──────────────────────────────────────────────────────
+ENV="local"
+for arg in "$@"; do
+    if [[ "$arg" == "--env" ]]; then
+        shift; ENV="$1"; shift; break
+    fi
+done
+
+ENV_FILE="$(cd "$(dirname "$0")" && pwd)/.env.$ENV"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "ERROR: env file not found: $ENV_FILE"
+    exit 1
+fi
+source "$ENV_FILE"
+
+DB_URL="$MAVEN_FETCHER_DB_URL"
+DB_USER="$MAVEN_FETCHER_DB_USER"
+DB_PASSWORD="$MAVEN_FETCHER_DB_PASSWORD"
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
