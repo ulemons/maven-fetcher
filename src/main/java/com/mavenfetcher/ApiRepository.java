@@ -20,7 +20,7 @@ public class ApiRepository implements AutoCloseable {
 
     public record ChangeEntry(
             String purl, String groupId, String artifactId,
-            String version, String publishedAt,
+            String version, String publishedAt, String detectedAt,
             boolean isPrerelease, String changeType) {}
 
     public record ChangePage(
@@ -144,11 +144,18 @@ public class ApiRepository implements AutoCloseable {
             List<ChangeEntry> entries = new ArrayList<>(limit);
             Timestamp lastTs   = null;
             String    lastPurl = null;
+            boolean   hasMore  = false;
 
             try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next() && entries.size() < limit) {
-                    String basePurl   = rs.getString("purl");
-                    String version    = rs.getString("latest_version");
+                while (rs.next()) {
+                    // The (limit+1)-th row signals hasMore — do not add it to results
+                    if (entries.size() == limit) {
+                        hasMore = true;
+                        break;
+                    }
+
+                    String basePurl     = rs.getString("purl");
+                    String version      = rs.getString("latest_version");
                     Timestamp firstSeen = rs.getTimestamp("first_seen_at");
                     lastTs   = rs.getTimestamp("last_updated_at");
                     lastPurl = basePurl;
@@ -159,12 +166,12 @@ public class ApiRepository implements AutoCloseable {
                             rs.getString("name"),
                             version,
                             isoStr(rs.getTimestamp("latest_release_at")),
+                            isoStr(lastTs),
                             isPrerelease(version),
                             firstSeen.after(since) ? "new_artifact" : "new_version"));
                 }
 
-                boolean hasMore    = rs.next();  // (limit+1)-th row exists?
-                String nextCursor  = (hasMore && lastTs != null)
+                String nextCursor = (hasMore && lastTs != null)
                         ? new Cursor(lastTs, lastPurl).encode()
                         : null;
 

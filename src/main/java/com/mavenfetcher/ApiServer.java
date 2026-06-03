@@ -138,7 +138,8 @@ public class ApiServer {
             entry.put("groupId",     e.groupId());
             entry.put("artifactId",  e.artifactId());
             entry.put("version",     e.version());
-            entry.put("publishedAt", e.publishedAt());
+            entry.put("publishedAt", e.publishedAt());   // when artifact was published to Maven Central
+            entry.put("detectedAt",  e.detectedAt());    // when our fetcher first saw this change
             entry.put("isPrerelease", e.isPrerelease());
             entry.put("changeType",  e.changeType());
         }
