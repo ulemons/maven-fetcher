@@ -1,0 +1,7 @@
+src/
+logs/
+*.sql
+*.sh
+.idea/
+META-INF/
+target/maven-fetcher-1.0.0-shaded.jar

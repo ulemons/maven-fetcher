@@ -1,0 +1,6 @@
+target/
+logs/
+.idea/
+*.sql
+!create_maven_packages.sql
+~/.maven-fetcher/
