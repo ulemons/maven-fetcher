@@ -98,7 +98,7 @@ public class MavenPackageFetcher {
                 case "--skip-write-db"    -> writeDb     = false;
                 case "--download-stats"   -> downloadStats = true;
                 case "--concurrency"      -> concurrency = parseConcurrency(args[++i]);
-                case "--db-url"           -> dbUrl       = args[++i];
+                case "--db-url"           -> dbUrl       = normalizeDbUrl(args[++i]);
                 case "--db-user"          -> dbUser      = args[++i];
                 case "--db-password"      -> dbPassword  = args[++i];
                 case "--report-file"      -> reportFile  = args[++i];
@@ -367,6 +367,42 @@ public class MavenPackageFetcher {
                 w.newLine();
             }
         }
+    }
+
+    /**
+     * Normalizes a user-supplied DB URL into a valid Postgres JDBC URL.
+     *
+     * Tolerates the common footguns when a connection string is pasted into an
+     * env var (Railway dashboard, .env files):
+     * <ul>
+     *   <li>leading/trailing whitespace</li>
+     *   <li>wrapping or stray single/double quotes (e.g. {@code sslmode="require})</li>
+     *   <li>a libpq scheme ({@code postgres://} or {@code postgresql://}) instead of
+     *       {@code jdbc:postgresql://}</li>
+     * </ul>
+     * Returns {@code null} when the input is {@code null}, and the original value when
+     * the trimmed result is empty, so the env-var fallback ({@link #buildEnvUrl}) still
+     * applies. Query parameters (sslmode, channel_binding, ...) are preserved verbatim
+     * apart from quote removal.
+     */
+    private static String normalizeDbUrl(String raw) {
+        if (raw == null) return null;
+        String url = raw.trim();
+        if (url.isEmpty()) return raw;          // keep existing empty-value behavior
+        // Drop one pair of wrapping quotes, then any remaining stray quotes.
+        char first = url.charAt(0);
+        if (url.length() >= 2 && (first == '"' || first == '\'')
+                && url.charAt(url.length() - 1) == first) {
+            url = url.substring(1, url.length() - 1);
+        }
+        url = url.replace("\"", "").replace("'", "");
+        // Accept libpq schemes and rewrite to the JDBC form.
+        if (url.startsWith("postgresql://")) {
+            url = "jdbc:" + url;
+        } else if (url.startsWith("postgres://")) {
+            url = "jdbc:postgresql://" + url.substring("postgres://".length());
+        }
+        return url;
     }
 
     /** Builds a JDBC URL from the standard CROWD_PACKAGES_DB_* env vars. */
