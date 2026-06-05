@@ -29,7 +29,7 @@ public class ApiRepository implements AutoCloseable {
             String nextCursor, boolean hasMore) {}
 
     /** Aggregate counts for a time window (new + changed packages only). */
-    public record WindowStats(long newPackages, long changedPackages, long totalProcessed) {}
+    public record WindowStats(long newPackages, long changedPackages, long totalChanged) {}
 
     /** Keyset cursor: last-seen (last_updated_at, purl) pair. */
     public record Cursor(Timestamp ts, String purl) {
@@ -225,7 +225,7 @@ public class ApiRepository implements AutoCloseable {
                 rs.next();
                 long newPkgs     = rs.getLong("new_count");
                 long changedPkgs = rs.getLong("changed_count");
-                return new WindowStats(newPkgs, changedPkgs, newPkgs + changedPkgs);
+                return new WindowStats(newPkgs, changedPkgs, newPkgs + changedPkgs);  // totalChanged = new + changed only
             }
         }
     }

@@ -137,7 +137,7 @@ public class ApiServer {
         ObjectNode stats = root.putObject("stats");
         stats.put("newPackages",     windowStats.newPackages());
         stats.put("changedPackages", windowStats.changedPackages());
-        stats.put("totalProcessed",  windowStats.totalProcessed());
+        stats.put("totalChanged",    windowStats.totalChanged());
 
         ArrayNode changes = root.putArray("changes");
         for (ApiRepository.ChangeEntry e : page.changes()) {
