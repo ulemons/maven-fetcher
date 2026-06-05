@@ -13,6 +13,9 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -60,7 +63,7 @@ public class ApiServer {
         server.start();
         MavenPackageFetcher.log("API server listening on http://0.0.0.0:%d", port);
         MavenPackageFetcher.log("  GET /api/runs/latest");
-        MavenPackageFetcher.log("  GET /api/changes[?since=&until=&cursor=&pageSize=100&includePrerelease=false]");
+        MavenPackageFetcher.log("  GET /api/changes[?since=yyyy-mm-dd&until=yyyy-mm-dd&cursor=&pageSize=100&includePrerelease=false]");
         Thread.currentThread().join();
     }
 
@@ -96,20 +99,24 @@ public class ApiServer {
 
         Map<String, String> params = parseQuery(exchange.getRequestURI());
 
-        // Resolve window: default to last run's window
+        // Resolve window: default to last run's window, date-granularity only
         ApiRepository.RunInfo info = repo.getLatestRunInfo();
         if (info == null) {
             sendJson(exchange, 404, JSON.createObjectNode().put("error", "No runs recorded yet"));
             return;
         }
 
-        Timestamp since = params.containsKey("since")
-                ? Timestamp.from(Instant.parse(params.get("since")))
-                : Timestamp.from(Instant.parse(info.since()));
+        LocalDate sinceDate = params.containsKey("since")
+                ? LocalDate.parse(params.get("since"))
+                : Instant.parse(info.since()).atZone(ZoneOffset.UTC).toLocalDate();
 
-        Timestamp until = params.containsKey("until")
-                ? Timestamp.from(Instant.parse(params.get("until")))
-                : Timestamp.from(Instant.parse(info.until()));
+        LocalDate untilDate = params.containsKey("until")
+                ? LocalDate.parse(params.get("until"))
+                : Instant.parse(info.until()).atZone(ZoneOffset.UTC).toLocalDate();
+
+        // since = start of day (exclusive >); until = last instant of day (inclusive <=)
+        Timestamp since = Timestamp.from(sinceDate.atStartOfDay(ZoneOffset.UTC).toInstant());
+        Timestamp until = Timestamp.from(untilDate.atTime(LocalTime.MAX).atZone(ZoneOffset.UTC).toInstant());
 
         ApiRepository.Cursor cursor = params.containsKey("cursor")
                 ? ApiRepository.Cursor.decode(params.get("cursor"))
@@ -131,8 +138,8 @@ public class ApiServer {
         ObjectNode root = JSON.createObjectNode();
 
         ObjectNode window = root.putObject("window");
-        window.put("since", page.since());
-        window.put("until", page.until());
+        window.put("since", sinceDate.toString());
+        window.put("until", untilDate.toString());
 
         ObjectNode stats = root.putObject("stats");
         stats.put("newPackages",     windowStats.newPackages());
