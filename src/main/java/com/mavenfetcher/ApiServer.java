@@ -78,12 +78,15 @@ public class ApiServer {
             return;
         }
 
+        LocalDate sinceDate = Instant.parse(info.since()).atZone(ZoneOffset.UTC).toLocalDate();
+        LocalDate untilDate = Instant.parse(info.until()).atZone(ZoneOffset.UTC).toLocalDate();
+
         ObjectNode root = JSON.createObjectNode();
-        root.put("runAt", info.until());
+        root.put("runAt", untilDate.toString());
 
         ObjectNode window = root.putObject("window");
-        window.put("since", info.since());
-        window.put("until", info.until());
+        window.put("since", sinceDate.toString());
+        window.put("until", untilDate.toString());
 
         ObjectNode stats = root.putObject("stats");
         stats.put("newPackages",       info.newPackages());
@@ -107,11 +110,11 @@ public class ApiServer {
         }
 
         LocalDate sinceDate = params.containsKey("since")
-                ? LocalDate.parse(params.get("since"))
+                ? parseDate(params.get("since"))
                 : Instant.parse(info.since()).atZone(ZoneOffset.UTC).toLocalDate();
 
         LocalDate untilDate = params.containsKey("until")
-                ? LocalDate.parse(params.get("until"))
+                ? parseDate(params.get("until"))
                 : Instant.parse(info.until()).atZone(ZoneOffset.UTC).toLocalDate();
 
         // since = start of day (exclusive >); until = last instant of day (inclusive <=)
@@ -194,6 +197,14 @@ public class ApiServer {
         exchange.sendResponseHeaders(500, msg.length);
         try (OutputStream out = exchange.getResponseBody()) { out.write(msg); }
         e.printStackTrace();
+    }
+
+    /** Accepts {@code yyyy-MM-dd} or a full ISO-8601 instant; always returns a date. */
+    private static LocalDate parseDate(String value) {
+        if (value.length() == 10) {
+            return LocalDate.parse(value);
+        }
+        return Instant.parse(value).atZone(ZoneOffset.UTC).toLocalDate();
     }
 
     /** Parses {@code key=value&key2=value2} from the request URI query string. */
