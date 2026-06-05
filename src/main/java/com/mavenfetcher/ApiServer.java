@@ -124,12 +124,20 @@ public class ApiServer {
         ApiRepository.ChangePage page = repo.queryChanges(
                 since, until, cursor, pageSize, includePrerelease);
 
+        ApiRepository.WindowStats windowStats = repo.queryWindowStats(
+                since, until, includePrerelease);
+
         // Build response
         ObjectNode root = JSON.createObjectNode();
 
         ObjectNode window = root.putObject("window");
         window.put("since", page.since());
         window.put("until", page.until());
+
+        ObjectNode stats = root.putObject("stats");
+        stats.put("newPackages",     windowStats.newPackages());
+        stats.put("changedPackages", windowStats.changedPackages());
+        stats.put("totalProcessed",  windowStats.totalProcessed());
 
         ArrayNode changes = root.putArray("changes");
         for (ApiRepository.ChangeEntry e : page.changes()) {

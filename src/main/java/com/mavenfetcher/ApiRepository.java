@@ -28,6 +28,9 @@ public class ApiRepository implements AutoCloseable {
             List<ChangeEntry> changes,
             String nextCursor, boolean hasMore) {}
 
+    /** Aggregate counts for a time window (new + changed packages only). */
+    public record WindowStats(long newPackages, long changedPackages, long totalProcessed) {}
+
     /** Keyset cursor: last-seen (last_updated_at, purl) pair. */
     public record Cursor(Timestamp ts, String purl) {
 
@@ -46,6 +49,19 @@ public class ApiRepository implements AutoCloseable {
                     raw.substring(sep + 1));
         }
     }
+
+    // ── Constants ─────────────────────────────────────────────────────────────
+
+    /** SQL fragment that excludes SNAPSHOT / alpha / beta / RC / milestone versions. */
+    private static final String PRERELEASE_EXCLUSION = """
+              AND (latest_version IS NULL OR NOT (
+                    latest_version ILIKE '%-SNAPSHOT'
+                 OR latest_version ILIKE '%-alpha%'
+                 OR latest_version ILIKE '%-beta%'
+                 OR latest_version ~* '-rc[0-9]*$'
+                 OR latest_version ~* '-m[0-9]+$'
+              ))
+            """;
 
     // ── Construction ──────────────────────────────────────────────────────────
 
@@ -110,15 +126,7 @@ public class ApiRepository implements AutoCloseable {
                 """);
 
         if (!includePrerelease) {
-            sql.append("""
-                      AND (latest_version IS NULL OR NOT (
-                            latest_version ILIKE '%-SNAPSHOT'
-                         OR latest_version ILIKE '%-alpha%'
-                         OR latest_version ILIKE '%-beta%'
-                         OR latest_version ~* '-rc[0-9]*$'
-                         OR latest_version ~* '-m[0-9]+$'
-                      ))
-                    """);
+            sql.append(PRERELEASE_EXCLUSION);
         }
 
         if (cursor != null) {
@@ -176,6 +184,48 @@ public class ApiRepository implements AutoCloseable {
                         : null;
 
                 return new ChangePage(isoStr(since), isoStr(until), entries, nextCursor, hasMore);
+            }
+        }
+    }
+
+    /**
+     * Computes aggregate stats for packages that were new or changed in the window.
+     *
+     * <p>A package is "new" when its {@code first_seen_at > since}; otherwise it is
+     * "changed" (an existing artifact that received a new version). {@code unchangedPackages}
+     * is intentionally omitted because {@code last_synced_at} only reflects the most recent
+     * sync and cannot be reconstructed for arbitrary historical windows.
+     *
+     * @param since            window start (exclusive)
+     * @param until            window end (inclusive)
+     * @param includePrerelease if false, SNAPSHOT / alpha / beta / RC / milestone versions excluded
+     */
+    public WindowStats queryWindowStats(Timestamp since, Timestamp until,
+                                        boolean includePrerelease) throws SQLException {
+        StringBuilder sql = new StringBuilder("""
+                SELECT
+                  COUNT(*) FILTER (WHERE first_seen_at >  ?) AS new_count,
+                  COUNT(*) FILTER (WHERE first_seen_at <= ?) AS changed_count
+                FROM maven_packages
+                WHERE last_updated_at >  ?
+                  AND last_updated_at <= ?
+                """);
+
+        if (!includePrerelease) {
+            sql.append(PRERELEASE_EXCLUSION);
+        }
+
+        try (PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            stmt.setTimestamp(1, since);  // FILTER: new
+            stmt.setTimestamp(2, since);  // FILTER: changed
+            stmt.setTimestamp(3, since);  // window start
+            stmt.setTimestamp(4, until);  // window end
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                rs.next();
+                long newPkgs     = rs.getLong("new_count");
+                long changedPkgs = rs.getLong("changed_count");
+                return new WindowStats(newPkgs, changedPkgs, newPkgs + changedPkgs);
             }
         }
     }
