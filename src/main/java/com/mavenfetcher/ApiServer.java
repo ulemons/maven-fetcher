@@ -113,9 +113,15 @@ public class ApiServer {
                 ? parseDate(params.get("since"))
                 : Instant.parse(info.since()).atZone(ZoneOffset.UTC).toLocalDate();
 
-        LocalDate untilDate = params.containsKey("until")
-                ? parseDate(params.get("until"))
-                : Instant.parse(info.until()).atZone(ZoneOffset.UTC).toLocalDate();
+        LocalDate untilDate;
+        if (params.containsKey("until")) {
+            untilDate = parseDate(params.get("until"));
+        } else if (params.containsKey("since")) {
+            // since-only: scope the window to just that day
+            untilDate = sinceDate;
+        } else {
+            untilDate = Instant.parse(info.until()).atZone(ZoneOffset.UTC).toLocalDate();
+        }
 
         // since = start of day (exclusive >); until = last instant of day (inclusive <=)
         Timestamp since = Timestamp.from(sinceDate.atStartOfDay(ZoneOffset.UTC).toInstant());
