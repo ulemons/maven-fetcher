@@ -143,7 +143,9 @@ public class MavenPackageFetcher {
 
         // ── Fetch packages ────────────────────────────────────────────────
         List<PackageInfo> packages;
-        long t0 = System.currentTimeMillis();
+        long    t0         = System.currentTimeMillis();
+        boolean indexStale = false;   // set to true when the Maven index could not be refreshed
+        String  staleMsg   = null;    // failure reason from MavenIndexClient
 
         if (useIndex) {
             if (count == COUNT_ALL) {
@@ -178,7 +180,9 @@ public class MavenPackageFetcher {
             }
 
             try (MavenIndexClient indexClient = new MavenIndexClient()) {
-                packages = indexClient.fetchPackages(candidateCount, startRank);
+                packages   = indexClient.fetchPackages(candidateCount, startRank);
+                indexStale = indexClient.isIndexStale();
+                staleMsg   = indexClient.getUpdateMessage();
             }
         } else {
             if (count == COUNT_ALL) {
@@ -277,6 +281,12 @@ public class MavenPackageFetcher {
                 db.insertRunRecord(stats);
 
                 System.out.println();
+                if (indexStale) {
+                    log("❌ WARNING: index update FAILED — data is STALE");
+                    log("   Reason  : %s", staleMsg != null ? staleMsg : "unknown");
+                    log("   The change counts below are NOT reliable.");
+                    System.out.println();
+                }
                 log("── Run summary ──────────────────────────────────────");
                 log("   new packages       : %,d", stats.newPackages());
                 log("   changed packages   : %,d", stats.changedPackages());
@@ -285,7 +295,7 @@ public class MavenPackageFetcher {
                 log("────────────────────────────────────────────────────");
 
                 if (reportFile != null) {
-                    writeChangeReport(reportFile, runStart, stats, db);
+                    writeChangeReport(reportFile, runStart, stats, db, indexStale, staleMsg);
                     log("Change report written to: %s", reportFile);
                 }
 
@@ -297,6 +307,15 @@ public class MavenPackageFetcher {
                 System.exit(1);
             }
         }
+
+        // Exit with code 2 when the Maven index could not be refreshed so that CI /
+        // Railway cron jobs can detect the failure even if the run "completes" otherwise.
+        // Code 2 (vs. 1) distinguishes an index-stale condition from a hard error.
+        if (indexStale) {
+            System.err.println();
+            System.err.println("EXIT 2: Maven index update failed — results may be stale.");
+            System.exit(2);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -307,10 +326,15 @@ public class MavenPackageFetcher {
      * Writes a human-readable change report to {@code path}.
      * New packages are listed first, then changed packages, each with their
      * current latest version.
+     *
+     * <p>When {@code indexStale} is {@code true} a prominent warning is prepended
+     * to the report so that automated consumers can detect the unreliable state.
      */
     private static void writeChangeReport(String path, Timestamp runStart,
                                            DatabaseWriter.RunStats stats,
-                                           DatabaseWriter db) throws Exception {
+                                           DatabaseWriter db,
+                                           boolean indexStale,
+                                           String staleMsg) throws Exception {
         List<DatabaseWriter.ChangedPackage> changed = db.queryChangedPackages(runStart);
 
         Path dest = Paths.get(path);
@@ -318,6 +342,16 @@ public class MavenPackageFetcher {
 
         try (BufferedWriter w = Files.newBufferedWriter(dest,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
+
+            if (indexStale) {
+                w.write("!! WARNING: INDEX UPDATE FAILED — DATA IS STALE !!");
+                w.newLine();
+                w.write("   Reason  : " + (staleMsg != null ? staleMsg : "unknown"));
+                w.newLine();
+                w.write("   The change counts in this report are NOT reliable.");
+                w.newLine();
+                w.newLine();
+            }
 
             w.write("Maven Fetcher — Change Report");
             w.newLine();

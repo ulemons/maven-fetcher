@@ -43,8 +43,48 @@ import java.util.Set;
  *
  * <p>Passing {@link MavenPackageFetcher#COUNT_ALL} as {@code count} fetches
  * every unique groupId:artifactId in the index (no early break).
+ *
+ * <p>After {@link #fetchPackages} returns, callers can inspect the update
+ * outcome via {@link #getUpdateOutcome()} and {@link #isIndexStale()}.
  */
 public class MavenIndexClient implements AutoCloseable {
+
+    // ── Update outcome ────────────────────────────────────────────────────────
+
+    /** Describes how the local index was updated during this run. */
+    public enum UpdateOutcome {
+        /** First run: full index downloaded from Maven Central. */
+        FULL_UPDATE,
+        /** Incremental delta successfully applied. */
+        INCREMENTAL,
+        /** Index was already up to date — no delta downloaded. */
+        UP_TO_DATE,
+        /** Incremental update failed; cache was cleaned and a full re-download succeeded. */
+        RECOVERED,
+        /**
+         * Both the incremental update and the recovery re-download failed.
+         * The local index is stale and change counts from this run are NOT reliable.
+         */
+        STALE_FALLBACK
+    }
+
+    private UpdateOutcome updateOutcome;
+    private String        updateMessage;
+
+    /** Returns the outcome of the index update attempt, available after {@link #fetchPackages}. */
+    public UpdateOutcome getUpdateOutcome() { return updateOutcome; }
+
+    /**
+     * Returns {@code true} if the index could not be updated and the run used stale data.
+     * When {@code true}, change counts from this run are unreliable.
+     */
+    public boolean isIndexStale() { return updateOutcome == UpdateOutcome.STALE_FALLBACK; }
+
+    /**
+     * Human-readable failure reason when {@link #isIndexStale()} is {@code true},
+     * or {@code null} for all other outcomes.
+     */
+    public String getUpdateMessage() { return updateMessage; }
 
     private static final String BASE_DIR    = System.getProperty("user.home") + "/.maven-fetcher";
     private static final String CACHE_DIR   = BASE_DIR + "/cache";
@@ -88,6 +128,7 @@ public class MavenIndexClient implements AutoCloseable {
 
     private void downloadIfNeeded() throws IOException {
         File indexDir  = new File(INDEX_DIR);
+        File cacheDir  = new File(CACHE_DIR);
         File writeLock = new File(indexDir, "write.lock");
         File timestamp = new File(indexDir, "timestamp");
 
@@ -110,23 +151,11 @@ public class MavenIndexClient implements AutoCloseable {
         }
         System.out.println();
 
-        // Create a temporary IndexingContext — required by IndexUpdateRequest.
-        // Always executed: DefaultIndexUpdater decides internally whether to perform
-        // a full download (first run / no cache) or an incremental delta (subsequent runs).
-        IndexingContext ctx = indexer.createIndexingContext(
-                "central-context", "central",
-                new File(CACHE_DIR), new File(INDEX_DIR),
-                CENTRAL_URL, null,
-                true, true,
-                Collections.singletonList(new MinimalArtifactInfoIndexCreator()));
-
-        IndexUpdateRequest req = new IndexUpdateRequest(ctx, new HttpResourceFetcher());
-        req.setForceFullUpdate(false);
-        req.setLocalIndexCacheDir(new File(CACHE_DIR));
-
         Instant t0 = Instant.now();
         try {
-            IndexUpdateResult result = indexUpdater.fetchAndUpdateIndex(req);
+            // DefaultIndexUpdater decides internally whether to apply an incremental
+            // delta (subsequent runs) or perform a full download (first run / no cache).
+            IndexUpdateResult result = runUpdate(false);
             long   sec   = Duration.between(t0, Instant.now()).toSeconds();
             String tsStr = result.getTimestamp() != null
                     ? result.getTimestamp().toInstant().toString()
@@ -135,24 +164,53 @@ public class MavenIndexClient implements AutoCloseable {
             if (result.isFullUpdate()) {
                 MavenPackageFetcher.log("✓ Index downloaded (full update) in %d s  [remote ts: %s]",
                         sec, tsStr);
+                updateOutcome = UpdateOutcome.FULL_UPDATE;
             } else {
                 // Both "incremental delta applied" and "already up to date" return isFullUpdate()=false.
                 // If elapsed time is very short it is almost certainly "already up to date".
                 if (sec < 10 && hasIndex) {
                     MavenPackageFetcher.log("✓ Index already up to date — no delta to download  [ts: %s]",
                             tsStr);
+                    updateOutcome = UpdateOutcome.UP_TO_DATE;
                 } else {
                     MavenPackageFetcher.log("✓ Index updated via incremental delta in %d s  [remote ts: %s]",
                             sec, tsStr);
+                    updateOutcome = UpdateOutcome.INCREMENTAL;
                 }
             }
             System.out.println();
         } catch (Exception e) {
             if (hasIndex) {
-                // Update failed but the local index is still valid: proceed with it.
+                // Incremental update failed (commonly due to a corrupt/incomplete cache).
+                // Clean the cache dir and retry with a forced full re-download before
+                // giving up and falling back to the stale local index.
                 MavenPackageFetcher.log("⚠  Incremental update failed (%s)", e.getMessage());
-                MavenPackageFetcher.log("   Proceeding with existing local index.");
+                MavenPackageFetcher.log("   Cleaning cache and attempting full re-download…");
                 System.out.println();
+                deleteDirContents(cacheDir);
+                try {
+                    Instant t1 = Instant.now();
+                    IndexUpdateResult result = runUpdate(true);
+                    long   sec   = Duration.between(t1, Instant.now()).toSeconds();
+                    String tsStr = result.getTimestamp() != null
+                            ? result.getTimestamp().toInstant().toString()
+                            : "n/a";
+                    MavenPackageFetcher.log(
+                            "✓ Index recovered via full re-download in %d s  [remote ts: %s]",
+                            sec, tsStr);
+                    System.out.println();
+                    updateOutcome = UpdateOutcome.RECOVERED;
+                } catch (Exception retryEx) {
+                    String staleTs = readTimestamp(timestamp);
+                    updateMessage  = retryEx.getMessage();
+                    updateOutcome  = UpdateOutcome.STALE_FALLBACK;
+                    MavenPackageFetcher.log("❌ Re-download also failed (%s)", retryEx.getMessage());
+                    MavenPackageFetcher.log(
+                            "   Proceeding with STALE local index (last updated: %s).", staleTs);
+                    MavenPackageFetcher.log(
+                            "   Change counts in this run are NOT reliable.");
+                    System.out.println();
+                }
             } else {
                 // First run: check whether any data was written despite the exception
                 boolean wroteData = new File(INDEX_DIR).listFiles(f ->
@@ -167,6 +225,29 @@ public class MavenIndexClient implements AutoCloseable {
                     throw new IOException("Download failed and no data was written: " + e.getMessage(), e);
                 }
             }
+        }
+    }
+
+    /**
+     * Creates a temporary {@link IndexingContext}, runs one update attempt, and
+     * closes the context (releasing {@code write.lock}) in all cases.
+     *
+     * @param forceFull {@code true} to force a full re-download regardless of cached state
+     * @return the update result from {@code DefaultIndexUpdater}
+     * @throws Exception if the update fails
+     */
+    private IndexUpdateResult runUpdate(boolean forceFull) throws Exception {
+        IndexingContext ctx = indexer.createIndexingContext(
+                "central-context", "central",
+                new File(CACHE_DIR), new File(INDEX_DIR),
+                CENTRAL_URL, null,
+                true, true,
+                Collections.singletonList(new MinimalArtifactInfoIndexCreator()));
+        try {
+            IndexUpdateRequest req = new IndexUpdateRequest(ctx, new HttpResourceFetcher());
+            req.setForceFullUpdate(forceFull);
+            req.setLocalIndexCacheDir(new File(CACHE_DIR));
+            return indexUpdater.fetchAndUpdateIndex(req);
         } finally {
             // Always close the context to release write.lock
             try { indexer.closeIndexingContext(ctx, false); } catch (Exception ignored) {}
@@ -358,6 +439,35 @@ public class MavenIndexClient implements AutoCloseable {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Deletes all files and sub-directories inside {@code dir} without
+     * removing the directory itself.  Used to purge a corrupt cache before
+     * a forced full re-download.
+     */
+    private static void deleteDirContents(File dir) {
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isDirectory()) {
+                deleteDirContents(f);
+            }
+            f.delete();
+        }
+    }
+
+    /**
+     * Reads the first line of the index {@code timestamp} file and returns it
+     * as a trimmed string, or {@code "unknown"} if the file is absent or unreadable.
+     */
+    private static String readTimestamp(File timestampFile) {
+        try {
+            if (timestampFile.exists()) {
+                return java.nio.file.Files.readString(timestampFile.toPath()).trim();
+            }
+        } catch (IOException ignored) {}
+        return "unknown";
+    }
 
     private static long estimateDownloadCount(int rank) {
         return Math.max(1_000L, Math.round(BASE_DOWNLOADS * Math.exp(-DECAY_RATE * (rank - 1))));
