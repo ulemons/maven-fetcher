@@ -78,8 +78,17 @@ public class ApiServer {
             return;
         }
 
+        Map<String, String> params = parseQuery(exchange.getRequestURI());
+        boolean includePrerelease = "true".equalsIgnoreCase(params.get("includePrerelease"));
+
         LocalDate sinceDate = Instant.parse(info.since()).atZone(ZoneOffset.UTC).toLocalDate();
         LocalDate untilDate = Instant.parse(info.until()).atZone(ZoneOffset.UTC).toLocalDate();
+
+        // Recompute new/changed over the calendar window (same logic as /api/changes)
+        // so both endpoints return consistent counts for the same since/until.
+        Timestamp since = Timestamp.from(sinceDate.atStartOfDay(ZoneOffset.UTC).toInstant());
+        Timestamp until = Timestamp.from(untilDate.atTime(LocalTime.MAX).atZone(ZoneOffset.UTC).toInstant());
+        ApiRepository.WindowStats windowStats = repo.queryWindowStats(since, until, includePrerelease);
 
         ObjectNode root = JSON.createObjectNode();
         root.put("runAt", untilDate.toString());
@@ -89,8 +98,10 @@ public class ApiServer {
         window.put("until", untilDate.toString());
 
         ObjectNode stats = root.putObject("stats");
-        stats.put("newPackages",       info.newPackages());
-        stats.put("changedPackages",   info.changedPackages());
+        // new/changed: recomputed from last_updated_at over the calendar window (matches /api/changes)
+        stats.put("newPackages",       windowStats.newPackages());
+        stats.put("changedPackages",   windowStats.changedPackages());
+        // unchanged/totalProcessed: still per-run counters from maven_fetcher_runs
         stats.put("unchangedPackages", info.unchangedPackages());
         stats.put("totalProcessed",    info.totalProcessed());
 
